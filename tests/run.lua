@@ -1,5 +1,6 @@
 local selection = require("replaice.selection")
 local prompts = require("replaice.prompts")
+local context_module = require("replaice.context")
 require("replaice.workflow")
 
 local function eq(actual, expected, label)
@@ -18,6 +19,23 @@ eq(captured.text, "brave", "captures an inclusive characterwise selection")
 local ok, err = selection.apply(captured, "gentle")
 assert(ok, err)
 eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "hello gentle world", "second line" }, "changes only selection")
+
+local fragment_line = "The launch was kind of successful, despite the delay."
+local fragment = "kind of successful"
+local fragment_start = assert(fragment_line:find(fragment, 1, true)) - 1
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { fragment_line })
+vim.api.nvim_win_set_cursor(0, { 1, fragment_start })
+vim.cmd("normal! v")
+vim.api.nvim_win_set_cursor(0, { 1, fragment_start + #fragment - 1 })
+local fragment_selection = assert(selection.capture(buf))
+vim.cmd("normal! \27")
+eq(fragment_selection.text, fragment, "captures only the mid-sentence fragment")
+local fragment_context = context_module.capture(fragment_selection, { max_chars = 12000, max_lines = 200 })
+eq(
+  context_module.document(fragment_context),
+  "The launch was <REPLAICE_SELECTION>kind of successful</REPLAICE_SELECTION>, despite the delay.",
+  "captured fragment is tagged at its exact document boundaries"
+)
 
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "hello first", "second world", "third" })
 vim.cmd("normal! gg7|vj6|\27")
@@ -72,6 +90,7 @@ local prompt_context = {
   before = "Before.",
   selected = "Original.",
   after = "After.",
+  kind = "char",
   filetype = "markdown",
 }
 local prompt_history = {
@@ -88,7 +107,21 @@ table.insert(prompt_history, { candidate = "Candidate three." })
 local reviewer_prompt = prompts.review(prompt_context, "Polish it.", prompt_history)
 assert(reviewer_prompt:find("Candidate one.", 1, true), "reviewer receives earlier candidate one")
 assert(reviewer_prompt:find("Candidate two.", 1, true), "reviewer receives earlier candidate two")
-assert(reviewer_prompt:find("<REPLAICE_SELECTION>\nCandidate three.\n</REPLAICE_SELECTION>", 1, true), "reviewer sees current candidate in context")
+assert(reviewer_prompt:find("Before.<REPLAICE_SELECTION>Candidate three.</REPLAICE_SELECTION>After.", 1, true), "reviewer sees exact characterwise boundaries")
+
+eq(context_module.document({
+  before = "The launch was ",
+  selected = "kind of successful",
+  after = ", despite the delay.",
+  kind = "char",
+}), "The launch was <REPLAICE_SELECTION>kind of successful</REPLAICE_SELECTION>, despite the delay.", "characterwise tags preserve fragment adjacency")
+
+eq(context_module.document({
+  before = "Paragraph before.",
+  selected = "Selected line one.\nSelected line two.",
+  after = "Paragraph after.",
+  kind = "line",
+}), "Paragraph before.\n<REPLAICE_SELECTION>\nSelected line one.\nSelected line two.\n</REPLAICE_SELECTION>\nParagraph after.", "linewise tags remain a distinct block")
 
 local real_http = package.loaded["replaice.providers.http"]
 package.loaded["replaice.providers.http"] = {
@@ -120,7 +153,7 @@ package.loaded["replaice.providers.http"] = real_http
 
 require("replaice.config").setup({
   provider = function(request, done)
-    assert(request.input:find("<REPLAICE_SELECTION>\nbad\n</REPLAICE_SELECTION>", 1, true), request.input)
+    assert(request.input:find("<REPLAICE_SELECTION>bad</REPLAICE_SELECTION>", 1, true), request.input)
     done(nil, "better")
   end,
   preview = false,
@@ -162,7 +195,7 @@ require("replaice.config").setup({
       eq(request.instructions, prompts.review_system, "final candidate is reviewed")
       assert(request.input:find("Candidate one.", 1, true), "final review retains first attempt")
       assert(request.input:find("Candidate two.", 1, true), "final review retains second attempt")
-      assert(request.input:find("<REPLAICE_SELECTION>\nCandidate three.\n</REPLAICE_SELECTION>", 1, true), "final review sees third candidate in context")
+      assert(request.input:find("<REPLAICE_SELECTION>Candidate three.</REPLAICE_SELECTION>", 1, true), "final review sees third candidate in context")
       done(nil, "OK")
     else
       error("unexpected provider call " .. provider_calls)

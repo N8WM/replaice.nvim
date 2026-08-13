@@ -47,19 +47,24 @@ function M.capture(selection, options)
     before = left(before, half),
     selected = selection.text,
     after = right(after, half),
+    kind = selection.kind,
     filetype = vim.bo[bufnr].filetype,
     filename = vim.api.nvim_buf_get_name(bufnr),
   }
 end
 
 function M.document(context, replacement)
-  return table.concat({
-    context.before,
-    "<REPLAICE_SELECTION>",
-    replacement or context.selected,
-    "</REPLAICE_SELECTION>",
-    context.after,
-  }, "\n")
+  local selected = replacement or context.selected
+  if context.kind == "line" then
+    local before = context.before ~= "" and (context.before .. "\n") or ""
+    local after = context.after ~= "" and ("\n" .. context.after) or ""
+    return before .. "<REPLAICE_SELECTION>\n" .. selected .. "\n</REPLAICE_SELECTION>" .. after
+  end
+
+  -- Keep characterwise boundaries byte-adjacent to their real surroundings.
+  -- Artificial newlines make a fragment look like a standalone paragraph and
+  -- can prompt a model to replace it with a complete sentence.
+  return context.before .. "<REPLAICE_SELECTION>" .. selected .. "</REPLAICE_SELECTION>" .. context.after
 end
 
 return M
