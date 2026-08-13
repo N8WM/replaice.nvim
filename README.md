@@ -30,7 +30,7 @@ With lazy.nvim:
 
 ```lua
 {
-  "your-name/replaice.nvim",
+  "N8WM/replaice.nvim",
   config = function()
     require("replaice").setup()
   end,
