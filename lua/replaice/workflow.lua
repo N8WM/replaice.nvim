@@ -1,9 +1,9 @@
 local config = require("replaice.config")
 local context_module = require("replaice.context")
-local preview = require("replaice.preview")
 local prompts = require("replaice.prompts")
 local providers = require("replaice.providers")
 local selection_module = require("replaice.selection")
+local ui = require("replaice.ui")
 
 local M = {}
 
@@ -38,13 +38,19 @@ function M.run(initial_prompt)
     local request = vim.trim(input) ~= "" and input or options.prompt
     local tries = 0
     local history = {}
+    local session = ui.open()
 
     local function call(input_text, callback, instructions)
       providers.request(options, {
         model = options.model,
         instructions = instructions or prompts.system,
         input = input_text,
-      }, callback)
+      }, function(err, value)
+        if session:is_cancelled() then
+          return
+        end
+        callback(err, value)
+      end)
     end
 
     local generate
@@ -52,31 +58,38 @@ function M.run(initial_prompt)
       local function apply(replacement)
         local ok, err = selection_module.apply(selection, replacement)
         if not ok then
-          notify(err, vim.log.levels.ERROR)
-          return
+          return false, err
         end
-        notify("Replaced the selected text")
+        return true
       end
 
       if not options.preview then
         if approved == false then
-          notify("Retry limit reached; applying a candidate the reviewer did not approve because preview is disabled", vim.log.levels.WARN)
+          notify(
+            "Retry limit reached; applying a candidate the reviewer did not approve because preview is disabled",
+            vim.log.levels.WARN
+          )
         end
-        apply(candidate)
+        local ok, err = apply(candidate)
+        if not ok then
+          session:show_error(err)
+          return
+        end
+        session:close(false)
         return
       end
-      preview.open(candidate, context.filetype, {
-        approved = approved,
+      session:finish(candidate, approved, {
         accept = apply,
         retry = function(previous)
+          session:waiting_for_retry()
           ask("", function(extra)
             if extra == nil then
+              session:finish(previous, approved, session.callbacks)
               return
             end
             local guidance = vim.trim(extra) ~= "" and extra or "Try a different approach."
-            local latest = history[#history]
-            latest.candidate = previous
-            latest.user_feedback = guidance
+            table.insert(history, { candidate = previous, user_feedback = guidance })
+            session:add_user_retry(#history, previous, guidance)
             tries = 0
             generate()
           end)
@@ -86,38 +99,41 @@ function M.run(initial_prompt)
 
     generate = function()
       tries = tries + 1
-      notify(("Generating replacement (try %d/%d)…"):format(tries, options.refine.max_tries))
+      session:generating(tries, options.refine.max_tries, #history + 1)
       call(prompts.rewrite(context, request, history), function(err, candidate)
         if err then
-          notify(err, vim.log.levels.ERROR)
+          session:show_error(err)
           return
         end
         local attempt = { candidate = candidate }
         table.insert(history, attempt)
+        session:add_candidate(#history, candidate)
         if not options.refine.enabled then
           finish(candidate, nil)
           return
         end
 
-        notify("Reviewing replacement…")
+        session:reviewing_candidate(#history)
         call(prompts.review(context, request, history), function(review_error, verdict)
           if review_error then
-            notify(review_error, vim.log.levels.ERROR)
+            session:show_error(review_error)
             return
           end
           local approved, review_feedback = prompts.review_result(verdict)
           if approved then
             attempt.review = { approved = true }
+            session:add_review(#history, true)
             finish(candidate, true)
           elseif approved == false then
             attempt.review = { approved = false, feedback = review_feedback }
+            session:add_review(#history, false, review_feedback)
             if tries < options.refine.max_tries then
               generate()
             else
               finish(candidate, false)
             end
           else
-            notify(review_feedback, vim.log.levels.ERROR)
+            session:show_error(review_feedback)
           end
         end, prompts.review_system)
       end)

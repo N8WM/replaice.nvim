@@ -15,6 +15,7 @@ Replaice does not ask a model for a patch. The model can return only replacement
 - A preview is shown before any edit. You can edit the preview itself, accept it, retry, or cancel.
 - The optional reviewer loop inserts each candidate into the surrounding context for review, then retries with feedback up to a configured limit.
 - Provider calls remain stateless, while the plugin explicitly gives both roles the complete candidate-and-review history.
+- A persistent workflow window shows generation status, every candidate, reviewer feedback, errors, and the final approval state.
 
 This is a structural boundary in the plugin, not merely a sentence in the prompt.
 
@@ -75,7 +76,9 @@ require("replaice").setup({
 1. Make a characterwise (`v`) or linewise (`V`) selection.
 2. Press `<leader>r`.
 3. Enter instructions such as `make this warmer and more concise`, or press Enter for the default improvement prompt.
-4. In the preview, press `a` to accept, `r` to retry with more guidance, or `q` to cancel. The preview is editable and clearly labels whether the reviewer approved the candidate.
+4. Follow generation and review in the workflow window. When it becomes editable, press `a` to accept, `r` to retry with more guidance, or `q` to cancel. The window clearly labels whether the reviewer approved the candidate.
+
+The workflow window uses native Neovim floating-window APIs and has no UI-plugin dependency. Instruction and retry prompts use `vim.ui.input`, so Noice and other UI replacements can enhance those inputs automatically. Closing the workflow window cancels the session and ignores any provider response that arrives afterward.
 
 The prompt uses `vim.ui.input`, so UI plugins that replace Neovim's standard input can enhance it without a hard dependency.
 

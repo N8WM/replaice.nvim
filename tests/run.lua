@@ -1,6 +1,7 @@
 local selection = require("replaice.selection")
 local prompts = require("replaice.prompts")
 local context_module = require("replaice.context")
+local workflow_ui = require("replaice.ui")
 require("replaice.workflow")
 
 local function eq(actual, expected, label)
@@ -124,6 +125,35 @@ eq(context_module.document({
   after = "Paragraph after.",
   kind = "line",
 }), "Paragraph before.\n<REPLAICE_SELECTION>\nSelected line one.\nSelected line two.\n</REPLAICE_SELECTION>\nParagraph after.", "linewise tags remain a distinct block")
+
+local ui_session = workflow_ui.open()
+ui_session:generating(1, 3, 1)
+ui_session:add_candidate(1, "First candidate.")
+ui_session:reviewing_candidate(1)
+ui_session:add_review(1, false, "It duplicates the next phrase.")
+ui_session:generating(2, 3, 2)
+ui_session:add_candidate(2, "Second candidate.")
+ui_session:reviewing_candidate(2)
+ui_session:add_review(2, true)
+ui_session:finish("Second candidate.", true, {
+  accept = function()
+    return true
+  end,
+  retry = function() end,
+})
+local ui_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.bufnr, 0, -1, false), "\n")
+assert(ui_text:find("First candidate.", 1, true), "workflow window retains earlier candidates")
+assert(ui_text:find("It duplicates the next phrase.", 1, true), "workflow window shows review feedback")
+assert(ui_text:find("Editable replacement — reviewer approved", 1, true), "workflow window shows approval state")
+eq(ui_session:replacement(), "Second candidate.", "workflow window exposes the editable replacement")
+vim.api.nvim_buf_set_lines(ui_session.bufnr, -2, -1, false, { "Edited candidate." })
+eq(ui_session:replacement(), "Edited candidate.", "workflow window reads user edits from the final region")
+ui_session:close(true)
+eq(ui_session:is_cancelled(), true, "closing a workflow as cancelled suppresses late results")
+
+local externally_closed_ui = workflow_ui.open()
+vim.api.nvim_win_close(externally_closed_ui.winid, true)
+eq(externally_closed_ui:is_cancelled(), true, "closing the floating window externally cancels its workflow")
 
 local real_http = package.loaded["replaice.providers.http"]
 package.loaded["replaice.providers.http"] = {
