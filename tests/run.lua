@@ -108,6 +108,8 @@ local reviewer_prompt = prompts.review(prompt_context, "Polish it.", prompt_hist
 assert(reviewer_prompt:find("Candidate one.", 1, true), "reviewer receives earlier candidate one")
 assert(reviewer_prompt:find("Candidate two.", 1, true), "reviewer receives earlier candidate two")
 assert(reviewer_prompt:find("Before.<REPLAICE_SELECTION>Candidate three.</REPLAICE_SELECTION>After.", 1, true), "reviewer sees exact characterwise boundaries")
+assert(reviewer_prompt:find("concrete, material defect", 1, true), "reviewer uses a material approval threshold")
+assert(reviewer_prompt:find("Reject candidates that duplicate, consume, or attempt to rewrite surrounding text.", 1, true), "reviewer checks replacement boundaries")
 
 eq(context_module.document({
   before = "The launch was ",
