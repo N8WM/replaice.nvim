@@ -126,33 +126,64 @@ eq(context_module.document({
   kind = "line",
 }), "Paragraph before.\n<REPLAICE_SELECTION>\nSelected line one.\nSelected line two.\n</REPLAICE_SELECTION>\nParagraph after.", "linewise tags remain a distinct block")
 
-local ui_session = workflow_ui.open()
-ui_session:generating(1, 3, 1)
+local ui_session = workflow_ui.open({
+  request = "Make this more concise.",
+  context = {
+    before = "The launch was ",
+    after = ", despite the delay.",
+    kind = "char",
+    filetype = "markdown",
+  },
+})
+local first_ui_index = ui_session:generating(1, 3)
+eq(first_ui_index, 1, "first generated candidate gets the first picker item")
 ui_session:add_candidate(1, "First candidate.")
 ui_session:reviewing_candidate(1)
 ui_session:add_review(1, false, "It duplicates the next phrase.")
-ui_session:generating(2, 3, 2)
+ui_session:generating(2, 3)
 ui_session:add_candidate(2, "Second candidate.")
 ui_session:reviewing_candidate(2)
 ui_session:add_review(2, true)
-ui_session:finish("Second candidate.", true, {
-  accept = function()
+local accepted_from_picker
+local retried_from_picker
+ui_session:set_callbacks({
+  accept = function(candidate)
+    accepted_from_picker = candidate
     return true
   end,
-  retry = function() end,
+  retry = function(candidate)
+    retried_from_picker = candidate
+  end,
 })
-local ui_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.bufnr, 0, -1, false), "\n")
-assert(ui_text:find("First candidate.", 1, true), "workflow window retains earlier candidates")
-assert(ui_text:find("It duplicates the next phrase.", 1, true), "workflow window shows review feedback")
-assert(ui_text:find("Editable replacement — reviewer approved", 1, true), "workflow window shows approval state")
-eq(ui_session:replacement(), "Second candidate.", "workflow window exposes the editable replacement")
-vim.api.nvim_buf_set_lines(ui_session.bufnr, -2, -1, false, { "Edited candidate." })
-eq(ui_session:replacement(), "Edited candidate.", "workflow window reads user edits from the final region")
-ui_session:close(true)
-eq(ui_session:is_cancelled(), true, "closing a workflow as cancelled suppresses late results")
+ui_session:ready(2, true)
+local prompt_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.prompt, 0, -1, false), "\n")
+local attempt_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.attempts, 0, -1, false), "\n")
+local preview_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.preview, 0, -1, false), "\n")
+eq(prompt_text, "Make this more concise.", "picker keeps the original prompt at the top")
+assert(attempt_text:find("1  needs revision", 1, true), "picker lists rejected attempts")
+assert(attempt_text:find("2  approved", 1, true), "picker lists approved attempts")
+assert(preview_text:find("The launch was Second candidate., despite the delay.", 1, true), "preview inserts selected candidate into context")
+assert(preview_text:find("OK", 1, true), "preview shows selected candidate review details")
+assert(#vim.api.nvim_buf_get_extmarks(ui_session.buffers.preview, -1, 0, -1, {}) > 0, "preview highlights the exact replacement range")
+eq(vim.bo[ui_session.buffers.attempts].modifiable, false, "attempt picker is read-only")
+eq(vim.bo[ui_session.buffers.preview].modifiable, false, "context preview is read-only")
+ui_session:select(-1)
+preview_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.preview, 0, -1, false), "\n")
+assert(preview_text:find("The launch was First candidate., despite the delay.", 1, true), "navigating updates contextual preview")
+assert(preview_text:find("It duplicates the next phrase.", 1, true), "navigating shows that attempt's feedback")
+ui_session:retry_selected()
+eq(retried_from_picker, "First candidate.", "retry operates on the navigated candidate")
+ui_session:accept_selected()
+eq(accepted_from_picker, "First candidate.", "accept operates on the navigated candidate")
+eq(ui_session.closed, true, "accept closes the picker")
+
+local cancelled_ui = workflow_ui.open()
+cancelled_ui:close(true)
+eq(cancelled_ui:is_cancelled(), true, "closing a workflow as cancelled suppresses late results")
 
 local externally_closed_ui = workflow_ui.open()
-vim.api.nvim_win_close(externally_closed_ui.winid, true)
+vim.api.nvim_win_close(externally_closed_ui.windows.attempts, true)
+vim.wait(1000, function() return externally_closed_ui:is_cancelled() end, 10)
 eq(externally_closed_ui:is_cancelled(), true, "closing the floating window externally cancels its workflow")
 
 local real_http = package.loaded["replaice.providers.http"]

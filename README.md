@@ -12,10 +12,10 @@ Replaice does not ask a model for a patch. The model can return only replacement
 - The captured buffer `changedtick` and original selected text are checked again before applying.
 - If the buffer changed while the model was working, the edit is rejected rather than guessed.
 - The model sees bounded context around the selection, but its output is applied only to the selection.
-- A preview is shown before any edit. You can edit the preview itself, accept it, retry, or cancel.
+- The picker stays read-only and requires explicit acceptance before any edit. You can inspect attempts, accept one, retry from one, or cancel.
 - The optional reviewer loop inserts each candidate into the surrounding context for review, then retries with feedback up to a configured limit.
 - Provider calls remain stateless, while the plugin explicitly gives both roles the complete candidate-and-review history.
-- A persistent workflow window shows generation status, every candidate, reviewer feedback, errors, and the final approval state.
+- A persistent picker keeps the prompt at the top, lists every candidate on the left, and shows the selected candidate inline in its original context on the right with reviewer feedback below it.
 
 This is a structural boundary in the plugin, not merely a sentence in the prompt.
 
@@ -76,9 +76,9 @@ require("replaice").setup({
 1. Make a characterwise (`v`) or linewise (`V`) selection.
 2. Press `<leader>r`.
 3. Enter instructions such as `make this warmer and more concise`, or press Enter for the default improvement prompt.
-4. Follow generation and review in the workflow window. When it becomes editable, press `a` to accept, `r` to retry with more guidance, or `q` to cancel. The window clearly labels whether the reviewer approved the candidate.
+4. Follow generation and review in the picker. Use `j`/`k` or the arrow keys to inspect attempts, `a` to accept the selected candidate, `r` to retry from it with more guidance, or `q` to cancel. You can accept any generated attempt, not only the latest one.
 
-The workflow window uses native Neovim floating-window APIs and has no UI-plugin dependency. Instruction and retry prompts use `vim.ui.input`, so Noice and other UI replacements can enhance those inputs automatically. Closing the workflow window cancels the session and ignores any provider response that arrives afterward.
+The read-only picker uses native Neovim floating-window APIs and has no UI-plugin dependency. Its contextual preview highlights the exact replacement inline so fragment boundaries remain visible. Instruction and retry prompts use `vim.ui.input`, so Noice and other UI replacements can enhance those inputs automatically. Closing either main pane cancels the session and ignores any provider response that arrives afterward.
 
 The prompt uses `vim.ui.input`, so UI plugins that replace Neovim's standard input can enhance it without a hard dependency.
 
@@ -132,7 +132,7 @@ The same adapter is used for generation and review. Keep it asynchronous so Neov
 
 The reviewer sees the candidate programmatically inserted between the original surrounding text, which catches awkward transitions better than reviewing the replacement alone. Every later editor call receives all prior candidates and reviews, and every later reviewer call receives earlier findings so it can catch regressions. These are explicit stateless requests rather than provider-managed conversation state.
 
-The loop is bounded by `refine.max_tries` to prevent runaway latency or API cost. Every candidate, including the last allowed attempt, is reviewed. If the limit is reached without approval, the preview says `not reviewer-approved`; with `preview = false`, Replaice emits a warning before applying it.
+The loop is bounded by `refine.max_tries` to prevent runaway latency or API cost. Every candidate, including the last allowed attempt, is reviewed. If the limit is reached without approval, the picker marks the candidate as needing revision; with `preview = false`, Replaice emits a warning before applying it.
 
 ## Development
 
