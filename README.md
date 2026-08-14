@@ -80,9 +80,9 @@ Picker controls:
 - `r`: create another version with additional guidance
 - `q`: cancel
 
-You can navigate back to, accept, or create a new version from any previous version. After accepting, the replacement remains selected so you can immediately run Replaice again.
+You can navigate back to, accept, or create a new version from any previous version.
 
-You can also run `:Replaice make this more formal` after making a visual selection. Run `:checkhealth replaice` to check your setup.
+You can also run `:Replaice make this more formal` after making a visual selection.
 
 ## Selection safety
 
