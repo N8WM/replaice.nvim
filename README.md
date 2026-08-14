@@ -78,7 +78,7 @@ require("replaice").setup({
 3. Enter instructions such as `make this warmer and more concise`, or press Enter for the default improvement prompt.
 4. Use `j`/`k` or the arrow keys to inspect versions, `a` to accept the selected version, `r` to create a new version from it with more guidance, or `q` to cancel. You can accept or branch from any generated version, not only the latest one.
 
-The read-only picker uses native Neovim floating-window APIs and has no UI-plugin dependency. Its contextual preview highlights the exact replacement inline, keeps fragment boundaries visible, and centers that location when surrounding context permits. The list shows a compact excerpt of each replacement rather than internal review state. Instruction and retry prompts use `vim.ui.input`, so Noice and other UI replacements can enhance those inputs automatically. Closing either main pane cancels the session and ignores any provider response that arrives afterward.
+The read-only picker uses native Neovim floating-window APIs and has no UI-plugin dependency. Its contextual preview highlights the exact replacement inline, keeps fragment boundaries visible, and centers that location when surrounding context permits. The list shows a compact excerpt of each replacement rather than internal review state. Instruction and retry prompts use `vim.ui.input`, so Noice and other UI replacements can enhance those inputs automatically. Closing the instructions, versions, or preview pane cancels the session and ignores any provider response that arrives afterward.
 
 You can also run `:Replaice make this more formal` after a visual selection. Run `:checkhealth replaice` to check the local setup.
 

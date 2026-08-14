@@ -171,6 +171,41 @@ assert(centered_view.topline > 1, "preview scrolls toward the highlighted replac
 assert(math.abs((centered_view.cursor - centered_view.topline) - math.floor(centered_view.height / 2)) <= 2, "highlighted replacement is approximately vertically centered")
 eq(vim.bo[ui_session.buffers.versions].modifiable, false, "version picker is read-only")
 eq(vim.bo[ui_session.buffers.preview].modifiable, false, "context preview is read-only")
+local original_columns = vim.o.columns
+local original_lines = vim.o.lines
+local original_prompt_config = vim.api.nvim_win_get_config(ui_session.windows.prompt)
+vim.api.nvim_set_current_win(ui_session.windows.preview)
+vim.o.columns = original_columns + 20
+vim.o.lines = original_lines + 6
+vim.api.nvim_exec_autocmds("VimResized", {})
+vim.wait(1000, function()
+  return vim.api.nvim_win_get_config(ui_session.windows.prompt).width ~= original_prompt_config.width
+end, 10)
+local resized_prompt_config = vim.api.nvim_win_get_config(ui_session.windows.prompt)
+assert(resized_prompt_config.width > original_prompt_config.width, "open picker expands when the editor is resized")
+eq(
+  math.floor(resized_prompt_config.col),
+  math.floor((vim.o.columns - resized_prompt_config.width - 2) / 2),
+  "resized picker remains horizontally centered"
+)
+eq(ui_session.selected, 2, "resizing preserves the selected version")
+eq(vim.api.nvim_get_current_win(), ui_session.windows.preview, "resizing preserves the active picker pane")
+vim.o.columns = 30
+vim.o.lines = 15
+vim.api.nvim_exec_autocmds("VimResized", {})
+vim.wait(1000, function()
+  return vim.api.nvim_win_get_config(ui_session.windows.prompt).width < resized_prompt_config.width
+end, 10)
+local compact_prompt_config = vim.api.nvim_win_get_config(ui_session.windows.prompt)
+local compact_preview_config = vim.api.nvim_win_get_config(ui_session.windows.preview)
+assert(compact_prompt_config.width + 2 <= vim.o.columns, "picker fits after a narrow resize")
+assert(compact_preview_config.width >= 1 and compact_preview_config.height >= 1, "picker panes remain valid at compact dimensions")
+vim.o.columns = original_columns
+vim.o.lines = original_lines
+vim.api.nvim_exec_autocmds("VimResized", {})
+vim.wait(1000, function()
+  return vim.api.nvim_win_get_config(ui_session.windows.prompt).width == original_prompt_config.width
+end, 10)
 ui_session:select(-1)
 prompt_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.prompt, 0, -1, false), "\n")
 preview_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.preview, 0, -1, false), "\n")

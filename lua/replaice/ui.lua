@@ -279,6 +279,10 @@ function Session:close(cancelled)
   end
   self.cancelled = cancelled == true
   self.closed = true
+  if self.augroup then
+    pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
+    self.augroup = nil
+  end
   for _, winid in pairs(self.windows) do
     if vim.api.nvim_win_is_valid(winid) then
       vim.api.nvim_win_close(winid, true)
@@ -305,12 +309,62 @@ end
 local function dimensions()
   local width = math.min(math.max(60, math.floor(vim.o.columns * 0.9)), math.max(1, vim.o.columns - 4))
   local height = math.min(math.max(16, math.floor(vim.o.lines * 0.78)), math.max(1, vim.o.lines - 4))
-  local prompt_height = math.min(4, math.max(2, height - 8))
+  local prompt_height = math.min(4, math.max(1, height - 8))
   local help_height = 1
-  local body_height = math.max(3, height - prompt_height - help_height - 6)
-  local left_width = math.max(16, math.floor((width - 2) * 0.3))
-  local right_width = math.max(16, width - left_width - 4)
+  local body_height = math.max(1, height - prompt_height - help_height - 6)
+  local max_left_width = math.max(1, width - 5)
+  local left_width = math.min(math.max(16, math.floor((width - 2) * 0.3)), max_left_width)
+  local right_width = math.max(1, width - left_width - 4)
   return width, height, prompt_height, help_height, body_height, left_width, right_width
+end
+
+function Session:_layout()
+  if self.closed then
+    return
+  end
+
+  local width, height, prompt_height, help_height, body_height, left_width, right_width = dimensions()
+  local row = math.max(0, math.floor((vim.o.lines - height) / 2 - 1))
+  local col = math.max(0, math.floor((vim.o.columns - width) / 2))
+  local layouts = {
+    prompt = {
+      width = width - 2,
+      height = prompt_height,
+      row = row,
+      col = col,
+    },
+    versions = {
+      width = left_width,
+      height = body_height,
+      row = row + prompt_height + 2,
+      col = col,
+    },
+    preview = {
+      width = right_width,
+      height = body_height,
+      row = row + prompt_height + 2,
+      col = col + left_width + 2,
+    },
+    help = {
+      width = width - 2,
+      height = help_height,
+      row = row + prompt_height + body_height + 4,
+      col = col,
+    },
+  }
+
+  self.left_width = left_width
+  for name, layout in pairs(layouts) do
+    local winid = self.windows[name]
+    if vim.api.nvim_win_is_valid(winid) then
+      local config = vim.api.nvim_win_get_config(winid)
+      for key, value in pairs(layout) do
+        config[key] = value
+      end
+      vim.api.nvim_win_set_config(winid, config)
+    end
+  end
+  self:_render()
 end
 
 function M.open(options)
@@ -373,6 +427,7 @@ function M.open(options)
     cancelled = false,
   }, Session)
   active_session = session
+  session.augroup = vim.api.nvim_create_augroup("replaice_picker_" .. tostring(buffers.versions), { clear = true })
   vim.api.nvim_set_hl(0, "ReplaiceSelection", { link = "IncSearch", default = true })
   vim.api.nvim_set_hl(0, "ReplaiceAccent", { link = "Function", default = true })
   vim.api.nvim_set_hl(0, "ReplaiceMuted", { link = "Comment", default = true })
@@ -401,6 +456,7 @@ function M.open(options)
   end
   for _, winid in ipairs({ windows.prompt, windows.versions, windows.preview }) do
     vim.api.nvim_create_autocmd("WinClosed", {
+      group = session.augroup,
       pattern = tostring(winid),
       once = true,
       callback = function()
@@ -410,6 +466,16 @@ function M.open(options)
       end,
     })
   end
+  vim.api.nvim_create_autocmd("VimResized", {
+    group = session.augroup,
+    callback = function()
+      vim.schedule(function()
+        if not session.closed then
+          session:_layout()
+        end
+      end)
+    end,
+  })
 
   session:_render()
   return session
