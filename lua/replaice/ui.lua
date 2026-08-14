@@ -10,12 +10,6 @@ local function split(text)
   return vim.split(text or "", "\n", { plain = true })
 end
 
-local function append(lines, text, prefix)
-  for _, line in ipairs(split(text)) do
-    table.insert(lines, (prefix or "") .. line)
-  end
-end
-
 local function set_lines(bufnr, lines)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
@@ -26,8 +20,7 @@ local function set_lines(bufnr, lines)
 end
 
 local function offset_position(text, offset)
-  local prefix = text:sub(1, offset)
-  local lines = split(prefix)
+  local lines = split(text:sub(1, offset))
   return #lines - 1, #(lines[#lines] or "")
 end
 
@@ -41,7 +34,6 @@ local function contextual_preview(context, candidate)
     prefix = context.before
     suffix = context.after
   end
-
   local document = prefix .. candidate .. suffix
   local start_row, start_col = offset_position(document, #prefix)
   local end_row, end_col = offset_position(document, #prefix + #candidate)
@@ -53,98 +45,115 @@ local function contextual_preview(context, candidate)
   }
 end
 
-local function status_label(attempt)
-  if attempt.review then
-    return attempt.review.approved and "approved" or "needs revision"
+local function compact(text)
+  return vim.trim((text or ""):gsub("%s+", " "))
+end
+
+local function truncate(text, width)
+  if vim.fn.strdisplaywidth(text) <= width then
+    return text
   end
-  return attempt.status or "generated"
+  local result = ""
+  local index = 0
+  while index < vim.fn.strchars(text) do
+    local next_char = vim.fn.strcharpart(text, index, 1)
+    if vim.fn.strdisplaywidth(result .. next_char .. "…") > width then
+      break
+    end
+    result = result .. next_char
+    index = index + 1
+  end
+  return result .. "…"
 end
 
 function Session:_render_prompt()
-  set_lines(self.buffers.prompt, split(self.request))
+  local version = self.versions[self.selected]
+  local instructions = version and version.instructions or self.initial_instructions
+  local lines = {}
+  for _, instruction in ipairs(instructions or {}) do
+    for line_index, line in ipairs(split(instruction)) do
+      table.insert(lines, (line_index == 1 and "• " or "  ") .. line)
+    end
+  end
+  if #lines == 0 then
+    lines = { "• Improve automatically" }
+  end
+  set_lines(self.buffers.prompt, lines)
+  vim.api.nvim_buf_clear_namespace(self.buffers.prompt, namespace, 0, -1)
+  for row, line in ipairs(lines) do
+    if line:sub(1, 2) == "• " then
+      vim.api.nvim_buf_add_highlight(self.buffers.prompt, namespace, "ReplaiceAccent", row - 1, 0, 2)
+    end
+  end
+  if vim.api.nvim_win_is_valid(self.windows.prompt) then
+    local config = vim.api.nvim_win_get_config(self.windows.prompt)
+    config.title = self.selected > 0 and (" Instructions for version %d "):format(self.selected) or " Instructions "
+    vim.api.nvim_win_set_config(self.windows.prompt, config)
+  end
 end
 
-function Session:_render_attempts()
-  if self.closed then
-    return
-  end
+
+function Session:_render_versions()
   local lines = {}
-  if #self.attempts == 0 then
-    table.insert(lines, "  Waiting for first candidate…")
+  if #self.versions == 0 then
+    lines = { "  Creating first version…" }
   else
-    for index, attempt in ipairs(self.attempts) do
-      table.insert(lines, ("  %d  %s"):format(index, status_label(attempt)))
+    local excerpt_width = math.max(8, self.left_width - 7)
+    for index, version in ipairs(self.versions) do
+      local label
+      if version.candidate then
+        label = truncate(compact(version.candidate), excerpt_width)
+      elseif version.error then
+        label = "Could not generate"
+      else
+        label = version.status or "Generating…"
+      end
+      table.insert(lines, ("  %d  %s"):format(index, label))
     end
   end
-  set_lines(self.buffers.attempts, lines)
-  vim.api.nvim_buf_clear_namespace(self.buffers.attempts, namespace, 0, -1)
-  if self.selected > 0 and self.selected <= #lines then
-    vim.api.nvim_buf_set_extmark(self.buffers.attempts, namespace, self.selected - 1, 0, {
+  set_lines(self.buffers.versions, lines)
+  vim.api.nvim_buf_clear_namespace(self.buffers.versions, namespace, 0, -1)
+  for index = 1, #self.versions do
+    vim.api.nvim_buf_add_highlight(self.buffers.versions, namespace, "ReplaiceAccent", index - 1, 2, 2 + #tostring(index))
+    if not self.versions[index].candidate then
+      vim.api.nvim_buf_add_highlight(self.buffers.versions, namespace, "ReplaiceMuted", index - 1, 5, -1)
+    end
+  end
+  if self.selected > 0 and self.selected <= #self.versions then
+    vim.api.nvim_buf_set_extmark(self.buffers.versions, namespace, self.selected - 1, 0, {
       line_hl_group = "Visual",
-      virt_text = { { "›", "Special" } },
+      virt_text = { { "›", "ReplaiceAccent" } },
       virt_text_pos = "overlay",
     })
-    if vim.api.nvim_win_is_valid(self.windows.attempts) then
-      pcall(vim.api.nvim_win_set_cursor, self.windows.attempts, { self.selected, 0 })
-    end
-  end
-  if vim.api.nvim_win_is_valid(self.windows.attempts) then
-    local config = vim.api.nvim_win_get_config(self.windows.attempts)
-    config.title = " Attempts — " .. self.status .. " "
-    vim.api.nvim_win_set_config(self.windows.attempts, config)
+    pcall(vim.api.nvim_win_set_cursor, self.windows.versions, { self.selected, 0 })
   end
 end
 
 function Session:_render_preview()
-  if self.closed then
+  local version = self.versions[self.selected]
+  if not version then
+    set_lines(self.buffers.preview, { "The selected version will appear here in context." })
     return
   end
-  local attempt = self.attempts[self.selected]
-  if not attempt then
-    set_lines(self.buffers.preview, { "Select a generated candidate to preview it in context." })
-    return
-  end
-  if not attempt.candidate then
-    local lines = { ("Candidate %d · %s"):format(self.selected, status_label(attempt)), "" }
-    if attempt.error then
-      table.insert(lines, "Error")
-      append(lines, attempt.error, "  ")
-    else
-      table.insert(lines, attempt.status or "Waiting…")
-    end
+  if not version.candidate then
+    local lines = { ("Version %d"):format(self.selected), "", version.error or version.status or "Generating…" }
     set_lines(self.buffers.preview, lines)
+    vim.api.nvim_buf_clear_namespace(self.buffers.preview, namespace, 0, -1)
+    vim.api.nvim_buf_add_highlight(self.buffers.preview, namespace, "ReplaiceAccent", 0, 0, -1)
+    if version.error then
+      vim.api.nvim_buf_add_highlight(self.buffers.preview, namespace, "DiagnosticError", 2, 0, -1)
+    end
     return
   end
 
-  local document, range = contextual_preview(self.context, attempt.candidate)
-  local verdict = status_label(attempt)
-  local lines = { ("Candidate %d · %s"):format(self.selected, verdict), "" }
+  local document, range = contextual_preview(self.context, version.candidate)
+  local lines = { ("Version %d"):format(self.selected), "" }
   local document_start = #lines
   vim.list_extend(lines, document)
-  table.insert(lines, "")
-  table.insert(lines, "Review")
-  if attempt.review then
-    if attempt.review.approved then
-      table.insert(lines, "  OK")
-    else
-      append(lines, attempt.review.feedback, "  ")
-    end
-  else
-    table.insert(lines, "  " .. (attempt.status or "pending"))
-  end
-  if attempt.user_feedback then
-    table.insert(lines, "")
-    table.insert(lines, "Retry guidance")
-    append(lines, attempt.user_feedback, "  ")
-  end
-  if attempt.error then
-    table.insert(lines, "")
-    table.insert(lines, "Error")
-    append(lines, attempt.error, "  ")
-  end
-
   set_lines(self.buffers.preview, lines)
   vim.api.nvim_buf_clear_namespace(self.buffers.preview, namespace, 0, -1)
+  vim.api.nvim_buf_add_highlight(self.buffers.preview, namespace, "ReplaiceAccent", 0, 0, -1)
+
   local start_row = document_start + range.start_row
   local end_row = document_start + range.end_row
   if start_row == end_row and range.start_col == range.end_col then
@@ -162,11 +171,18 @@ function Session:_render_preview()
   end
   if vim.api.nvim_win_is_valid(self.windows.preview) then
     pcall(vim.api.nvim_win_set_cursor, self.windows.preview, { start_row + 1, range.start_col })
+    pcall(vim.api.nvim_win_call, self.windows.preview, function()
+      vim.cmd("normal! zz")
+    end)
   end
 end
 
 function Session:_render()
-  self:_render_attempts()
+  if self.closed then
+    return
+  end
+  self:_render_prompt()
+  self:_render_versions()
   self:_render_preview()
 end
 
@@ -178,50 +194,39 @@ function Session:set_callbacks(callbacks)
   self.callbacks = callbacks
 end
 
-function Session:generating(attempt, max_tries)
-  self.status = ("generating %d/%d"):format(attempt, max_tries)
-  self.pending_index = #self.attempts + 1
-  self.attempts[self.pending_index] = { status = "generating…" }
-  self.selected = self.pending_index
-  self:_render()
-  return self.pending_index
-end
-
-function Session:add_candidate(index, candidate)
-  local attempt = self.attempts[index] or {}
-  attempt.candidate = candidate
-  attempt.status = "generated"
-  self.attempts[index] = attempt
+function Session:start_version(instructions)
+  local index = #self.versions + 1
+  self.versions[index] = {
+    instructions = vim.deepcopy(instructions or self.initial_instructions),
+    status = "Generating…",
+  }
   self.selected = index
-  self.status = "candidate generated"
   self:_render()
+  return index
 end
 
-function Session:reviewing_candidate(index)
-  self.attempts[index].status = "reviewing…"
-  self.status = "reviewing"
-  self:_render()
-end
-
-function Session:add_review(index, approved, feedback)
-  self.attempts[index].status = nil
-  self.attempts[index].review = { approved = approved, feedback = feedback }
-  self.status = approved and "approved" or "revision requested"
-  self:_render()
-end
-
-function Session:add_user_guidance(index, guidance)
-  if self.attempts[index] then
-    self.attempts[index].user_feedback = guidance
+function Session:set_working(index, message)
+  if self.versions[index] then
+    self.versions[index].status = message or "Generating…"
+    self:_render()
   end
-  self.status = "retry requested"
+end
+
+function Session:complete_version(index, candidate)
+  local version = self.versions[index]
+  if not version then
+    return
+  end
+  version.candidate = candidate
+  version.status = nil
+  self.selected = index
   self:_render()
 end
 
-function Session:supersede_pending()
-  for _, attempt in ipairs(self.attempts) do
-    if attempt.status == "generating…" or attempt.status == "reviewing…" then
-      attempt.status = "superseded"
+function Session:stop_pending()
+  for _, version in ipairs(self.versions) do
+    if not version.candidate and not version.error then
+      version.status = "Stopped"
     end
   end
   self:_render()
@@ -229,53 +234,43 @@ end
 
 function Session:show_error(message, index)
   index = index or self.selected
-  if index > 0 and self.attempts[index] then
-    self.attempts[index].status = "error"
-    self.attempts[index].error = message
+  if self.versions[index] then
+    self.versions[index].status = nil
+    self.versions[index].error = message
   end
-  self.status = "error"
-  self:_render()
-end
-
-function Session:ready(index, approved)
-  self.selected = index
-  self.status = approved == true and "ready · approved"
-    or approved == false and "ready · not approved"
-    or "ready · review disabled"
   self:_render()
 end
 
 function Session:select(delta)
-  if #self.attempts == 0 then
+  if #self.versions == 0 then
     return
   end
-  self.selected = math.min(#self.attempts, math.max(1, self.selected + delta))
+  self.selected = math.min(#self.versions, math.max(1, self.selected + delta))
   self:_render()
 end
 
-function Session:selected_attempt()
-  return self.attempts[self.selected], self.selected
+function Session:selected_version()
+  return self.versions[self.selected], self.selected
 end
 
 function Session:accept_selected()
-  local attempt = self:selected_attempt()
-  if not attempt or not attempt.candidate or not self.callbacks then
+  local version = self:selected_version()
+  if not version or not version.candidate or not self.callbacks then
     return
   end
-  local ok, err = self.callbacks.accept(attempt.candidate)
+  local ok, err = self.callbacks.accept(version.candidate)
   if ok == false then
     self:show_error(err)
-    return
+  else
+    self:close(false)
   end
-  self:close(false)
 end
 
 function Session:retry_selected()
-  local attempt, index = self:selected_attempt()
-  if not attempt or not attempt.candidate or not self.callbacks then
-    return
+  local version, index = self:selected_version()
+  if version and version.candidate and self.callbacks then
+    self.callbacks.retry(version.candidate, index)
   end
-  self.callbacks.retry(attempt.candidate, index)
 end
 
 function Session:close(cancelled)
@@ -328,7 +323,7 @@ function M.open(options)
   local col = math.max(0, math.floor((vim.o.columns - width) / 2))
   local buffers = {
     prompt = new_buffer("replaice"),
-    attempts = new_buffer("replaice"),
+    versions = new_buffer("replaice"),
     preview = new_buffer(options.context and options.context.filetype or "text"),
     help = new_buffer("replaice"),
   }
@@ -339,15 +334,14 @@ function M.open(options)
     height = prompt_height,
     row = row,
     col = col,
-    title = " Prompt ",
-    focusable = false,
+    title = " Instructions ",
   }))
-  windows.attempts = vim.api.nvim_open_win(buffers.attempts, true, vim.tbl_extend("force", common, {
+  windows.versions = vim.api.nvim_open_win(buffers.versions, true, vim.tbl_extend("force", common, {
     width = left_width,
     height = body_height,
     row = row + prompt_height + 2,
     col = col,
-    title = " Attempts ",
+    title = " Versions ",
   }))
   windows.preview = vim.api.nvim_open_win(buffers.preview, false, vim.tbl_extend("force", common, {
     width = right_width,
@@ -365,22 +359,27 @@ function M.open(options)
   }))
   vim.wo[windows.prompt].wrap = true
   vim.wo[windows.preview].wrap = true
-  vim.wo[windows.attempts].cursorline = false
-  set_lines(buffers.help, { " j/k navigate   a accept selected   r retry selected   q cancel " })
+  set_lines(buffers.help, { " j/k navigate   a accept   r new version   q cancel " })
 
   local session = setmetatable({
     buffers = buffers,
     windows = windows,
-    request = options.request or "",
     context = options.context or { before = "", after = "", kind = "char" },
-    attempts = {},
+    initial_instructions = options.instructions or { options.request or "Improve automatically" },
+    versions = {},
     selected = 0,
-    status = "starting",
+    left_width = left_width,
     closed = false,
     cancelled = false,
   }, Session)
   active_session = session
   vim.api.nvim_set_hl(0, "ReplaiceSelection", { link = "IncSearch", default = true })
+  vim.api.nvim_set_hl(0, "ReplaiceAccent", { link = "Function", default = true })
+  vim.api.nvim_set_hl(0, "ReplaiceMuted", { link = "Comment", default = true })
+  for _, item in ipairs({ { "j/k", 3 }, { "a accept", 1 }, { "r new version", 1 }, { "q cancel", 1 } }) do
+    local start = assert(string.find(vim.api.nvim_buf_get_lines(buffers.help, 0, 1, false)[1], item[1], 1, true)) - 1
+    vim.api.nvim_buf_add_highlight(buffers.help, namespace, "ReplaiceAccent", 0, start, start + item[2])
+  end
 
   local function cancel()
     local callbacks = session.callbacks
@@ -389,18 +388,18 @@ function M.open(options)
       callbacks.cancel()
     end
   end
-  for _, bufnr in ipairs({ buffers.attempts, buffers.preview }) do
+  for _, bufnr in ipairs({ buffers.prompt, buffers.versions, buffers.preview }) do
     vim.keymap.set("n", "j", function() session:select(1) end, { buffer = bufnr, nowait = true })
     vim.keymap.set("n", "<Down>", function() session:select(1) end, { buffer = bufnr, nowait = true })
     vim.keymap.set("n", "k", function() session:select(-1) end, { buffer = bufnr, nowait = true })
     vim.keymap.set("n", "<Up>", function() session:select(-1) end, { buffer = bufnr, nowait = true })
     vim.keymap.set("n", "gg", function() session.selected = 1; session:_render() end, { buffer = bufnr })
-    vim.keymap.set("n", "G", function() session.selected = #session.attempts; session:_render() end, { buffer = bufnr })
+    vim.keymap.set("n", "G", function() session.selected = #session.versions; session:_render() end, { buffer = bufnr })
     vim.keymap.set("n", "a", function() session:accept_selected() end, { buffer = bufnr, nowait = true })
     vim.keymap.set("n", "r", function() session:retry_selected() end, { buffer = bufnr, nowait = true })
     vim.keymap.set("n", "q", cancel, { buffer = bufnr, nowait = true })
   end
-  for _, winid in ipairs({ windows.attempts, windows.preview }) do
+  for _, winid in ipairs({ windows.prompt, windows.versions, windows.preview }) do
     vim.api.nvim_create_autocmd("WinClosed", {
       pattern = tostring(winid),
       once = true,
@@ -412,7 +411,6 @@ function M.open(options)
     })
   end
 
-  session:_render_prompt()
   session:_render()
   return session
 end

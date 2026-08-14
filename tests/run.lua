@@ -127,23 +127,20 @@ eq(context_module.document({
 }), "Paragraph before.\n<REPLAICE_SELECTION>\nSelected line one.\nSelected line two.\n</REPLAICE_SELECTION>\nParagraph after.", "linewise tags remain a distinct block")
 
 local ui_session = workflow_ui.open({
-  request = "Make this more concise.",
+  instructions = { "Make this more concise." },
   context = {
-    before = "The launch was ",
-    after = ", despite the delay.",
+    before = table.concat(vim.tbl_map(function(index) return "Earlier context " .. index end, vim.fn.range(1, 20)), "\n") .. "\nThe launch was ",
+    after = ", despite the delay.\n" .. table.concat(vim.tbl_map(function(index) return "Later context " .. index end, vim.fn.range(1, 20)), "\n"),
     kind = "char",
     filetype = "markdown",
   },
 })
-local first_ui_index = ui_session:generating(1, 3)
-eq(first_ui_index, 1, "first generated candidate gets the first picker item")
-ui_session:add_candidate(1, "First candidate.")
-ui_session:reviewing_candidate(1)
-ui_session:add_review(1, false, "It duplicates the next phrase.")
-ui_session:generating(2, 3)
-ui_session:add_candidate(2, "Second candidate.")
-ui_session:reviewing_candidate(2)
-ui_session:add_review(2, true)
+local first_ui_index = ui_session:start_version({ "Make this more concise." })
+eq(first_ui_index, 1, "first user generation gets the first visible version")
+ui_session:complete_version(1, "more successful")
+local second_ui_index = ui_session:start_version({ "Make this more concise.", "Keep it understated." })
+eq(second_ui_index, 2, "a user retry creates the next visible version")
+ui_session:complete_version(2, "a modest success")
 local accepted_from_picker
 local retried_from_picker
 ui_session:set_callbacks({
@@ -151,30 +148,38 @@ ui_session:set_callbacks({
     accepted_from_picker = candidate
     return true
   end,
-  retry = function(candidate)
+  retry = function(candidate, index)
     retried_from_picker = candidate
+    eq(index, 1, "retry identifies the selected version")
   end,
 })
-ui_session:ready(2, true)
 local prompt_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.prompt, 0, -1, false), "\n")
-local attempt_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.attempts, 0, -1, false), "\n")
+local version_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.versions, 0, -1, false), "\n")
 local preview_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.preview, 0, -1, false), "\n")
-eq(prompt_text, "Make this more concise.", "picker keeps the original prompt at the top")
-assert(attempt_text:find("1  needs revision", 1, true), "picker lists rejected attempts")
-assert(attempt_text:find("2  approved", 1, true), "picker lists approved attempts")
-assert(preview_text:find("The launch was Second candidate., despite the delay.", 1, true), "preview inserts selected candidate into context")
-assert(preview_text:find("OK", 1, true), "preview shows selected candidate review details")
+assert(prompt_text:find("Make this more concise.", 1, true), "selected version shows the original request")
+assert(prompt_text:find("Keep it understated.", 1, true), "selected version shows its retry guidance")
+assert(version_text:find("1  more success", 1, true), "version list uses a useful replacement excerpt")
+assert(version_text:find("2  a modest succ", 1, true), "version list remains chronological")
+assert(not version_text:find("approved", 1, true), "version list hides reviewer mechanics")
+assert(preview_text:find("The launch was a modest success, despite the delay.", 1, true), "preview inserts selected version into context")
+assert(not preview_text:find("Review", 1, true), "preview hides automatic review details")
 assert(#vim.api.nvim_buf_get_extmarks(ui_session.buffers.preview, -1, 0, -1, {}) > 0, "preview highlights the exact replacement range")
-eq(vim.bo[ui_session.buffers.attempts].modifiable, false, "attempt picker is read-only")
+local centered_view = vim.api.nvim_win_call(ui_session.windows.preview, function()
+  return { topline = vim.fn.winsaveview().topline, cursor = vim.api.nvim_win_get_cursor(0)[1], height = vim.api.nvim_win_get_height(0) }
+end)
+assert(centered_view.topline > 1, "preview scrolls toward the highlighted replacement")
+assert(math.abs((centered_view.cursor - centered_view.topline) - math.floor(centered_view.height / 2)) <= 2, "highlighted replacement is approximately vertically centered")
+eq(vim.bo[ui_session.buffers.versions].modifiable, false, "version picker is read-only")
 eq(vim.bo[ui_session.buffers.preview].modifiable, false, "context preview is read-only")
 ui_session:select(-1)
+prompt_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.prompt, 0, -1, false), "\n")
 preview_text = table.concat(vim.api.nvim_buf_get_lines(ui_session.buffers.preview, 0, -1, false), "\n")
-assert(preview_text:find("The launch was First candidate., despite the delay.", 1, true), "navigating updates contextual preview")
-assert(preview_text:find("It duplicates the next phrase.", 1, true), "navigating shows that attempt's feedback")
+eq(prompt_text, "• Make this more concise.", "navigating updates the visible instruction lineage")
+assert(preview_text:find("The launch was more successful, despite the delay.", 1, true), "navigating updates contextual preview")
 ui_session:retry_selected()
-eq(retried_from_picker, "First candidate.", "retry operates on the navigated candidate")
+eq(retried_from_picker, "more successful", "retry operates on the navigated version")
 ui_session:accept_selected()
-eq(accepted_from_picker, "First candidate.", "accept operates on the navigated candidate")
+eq(accepted_from_picker, "more successful", "accept operates on the navigated version")
 eq(ui_session.closed, true, "accept closes the picker")
 
 local cancelled_ui = workflow_ui.open()
@@ -182,7 +187,7 @@ cancelled_ui:close(true)
 eq(cancelled_ui:is_cancelled(), true, "closing a workflow as cancelled suppresses late results")
 
 local externally_closed_ui = workflow_ui.open()
-vim.api.nvim_win_close(externally_closed_ui.windows.attempts, true)
+vim.api.nvim_win_close(externally_closed_ui.windows.versions, true)
 vim.wait(1000, function() return externally_closed_ui:is_cancelled() end, 10)
 eq(externally_closed_ui:is_cancelled(), true, "closing the floating window externally cancels its workflow")
 
@@ -276,6 +281,74 @@ require("replaice.workflow").run()
 vim.ui.input = original_input
 eq(provider_calls, 6, "three candidates are each followed by a review")
 eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "Candidate three. text" }, "approved third candidate is applied")
+
+local real_ui_open = workflow_ui.open
+local visible_versions = {}
+local picker_callbacks
+workflow_ui.open = function(options)
+  eq(options.instructions, { "Polish the fragment." }, "picker receives the effective original request")
+  return {
+    is_cancelled = function() return false end,
+    set_callbacks = function(_, callbacks) picker_callbacks = callbacks end,
+    start_version = function(_, instructions)
+      table.insert(visible_versions, { instructions = vim.deepcopy(instructions) })
+      return #visible_versions
+    end,
+    set_working = function() end,
+    complete_version = function(_, index, candidate) visible_versions[index].candidate = candidate end,
+    stop_pending = function() end,
+    show_error = function(_, message) error(message) end,
+    close = function() end,
+  }
+end
+local private_calls = 0
+require("replaice.config").setup({
+  provider = function(request, done)
+    private_calls = private_calls + 1
+    if private_calls == 1 then
+      done(nil, "private candidate one")
+    elseif private_calls == 2 then
+      done(nil, "REVISE: retain the fragment boundary")
+    elseif private_calls == 3 then
+      done(nil, "private candidate two")
+    elseif private_calls == 4 then
+      done(nil, "REVISE: make it more natural")
+    elseif private_calls == 5 then
+      done(nil, "visible version one")
+    elseif private_calls == 6 then
+      done(nil, "OK")
+    elseif private_calls == 7 then
+      assert(request.input:find("visible version one", 1, true), "new version branches from the selected replacement")
+      assert(request.input:find("Keep it fragmentary.", 1, true), "new version receives user retry guidance")
+      done(nil, "visible version two")
+    elseif private_calls == 8 then
+      done(nil, "OK")
+    else
+      error("unexpected private workflow call " .. private_calls)
+    end
+  end,
+  preview = true,
+  refine = { enabled = true, max_tries = 3 },
+})
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "bad text" })
+vim.cmd("normal! gg0v2l")
+local private_input_count = 0
+vim.ui.input = function(_, callback)
+  private_input_count = private_input_count + 1
+  callback(private_input_count == 1 and "Polish the fragment." or "Keep it fragmentary.")
+end
+require("replaice.workflow").run()
+eq(#visible_versions, 1, "automatic refinement produces only one visible version")
+eq(visible_versions[1].candidate, "visible version one", "only the resolved internal candidate becomes visible")
+picker_callbacks.retry(visible_versions[1].candidate, 1)
+eq(#visible_versions, 2, "an explicit user retry creates another visible version")
+eq(visible_versions[2].instructions, { "Polish the fragment.", "Keep it fragmentary." }, "new version exposes its complete user instruction lineage")
+eq(visible_versions[2].candidate, "visible version two", "user retry resolves into the next version")
+local accepted, accept_error = picker_callbacks.accept(visible_versions[2].candidate)
+assert(accepted, accept_error)
+eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "visible version two text" }, "selected visible version remains selection-scoped")
+workflow_ui.open = real_ui_open
+vim.ui.input = original_input
 
 local unapproved_calls = 0
 local saw_unapproved_warning = false

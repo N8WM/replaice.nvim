@@ -36,27 +36,11 @@ function M.run(initial_prompt)
       return
     end
     local request = vim.trim(input) ~= "" and input or options.prompt
-    local tries = 0
-    local history = {}
-    local session = ui.open({ request = request, context = context })
+    local session = ui.open({ context = context, instructions = { request } })
+    local versions = {}
     local epoch = 0
     local retry_prompt_open = false
 
-    local function call(input_text, callback, instructions)
-      local call_epoch = epoch
-      providers.request(options, {
-        model = options.model,
-        instructions = instructions or prompts.system,
-        input = input_text,
-      }, function(err, value)
-        if session:is_cancelled() or call_epoch ~= epoch then
-          return
-        end
-        callback(err, value)
-      end)
-    end
-
-    local generate
     local function apply(replacement)
       local ok, err = selection_module.apply(selection, replacement)
       if not ok then
@@ -65,6 +49,7 @@ function M.run(initial_prompt)
       return true
     end
 
+    local start_run
     local function retry(previous, selected_index)
       if retry_prompt_open then
         return
@@ -76,20 +61,58 @@ function M.run(initial_prompt)
           return
         end
         local guidance = vim.trim(extra) ~= "" and extra or "Try a different approach."
-        epoch = epoch + 1
-        session:supersede_pending()
-        table.insert(history, { candidate = previous, user_feedback = guidance })
-        session:add_user_guidance(selected_index, guidance)
-        tries = 0
-        generate()
+        local source = versions[selected_index]
+        if not source then
+          return
+        end
+
+        local history = vim.deepcopy(source.history)
+        local latest = history[#history]
+        if latest and latest.candidate == previous then
+          latest.user_feedback = guidance
+        else
+          table.insert(history, { candidate = previous, user_feedback = guidance })
+        end
+        local instructions = vim.deepcopy(source.instructions)
+        table.insert(instructions, guidance)
+
+        session:stop_pending()
+        start_run(history, instructions)
       end)
     end
 
     session:set_callbacks({ accept = apply, retry = retry })
 
-    local function finish(candidate, approved, index)
+    start_run = function(base_history, instructions)
+      epoch = epoch + 1
+      local run = {
+        epoch = epoch,
+        history = vim.deepcopy(base_history or {}),
+        instructions = vim.deepcopy(instructions),
+        tries = 0,
+      }
+      local version_index = session:start_version(run.instructions)
+      versions[version_index] = run
 
-      if not options.preview then
+      local function call(input_text, callback, system_instructions)
+        providers.request(options, {
+          model = options.model,
+          instructions = system_instructions or prompts.system,
+          input = input_text,
+        }, function(err, value)
+          if session:is_cancelled() or run.epoch ~= epoch then
+            return
+          end
+          callback(err, value)
+        end)
+      end
+
+      local function finish(candidate, approved)
+        run.approved = approved
+        session:complete_version(version_index, candidate)
+        if options.preview then
+          return
+        end
         if approved == false then
           notify(
             "Retry limit reached; applying a candidate the reviewer did not approve because preview is disabled",
@@ -98,58 +121,55 @@ function M.run(initial_prompt)
         end
         local ok, err = apply(candidate)
         if not ok then
-          session:show_error(err)
+          session:show_error(err, version_index)
           return
         end
         session:close(false)
-        return
       end
-      session:ready(index, approved)
-    end
 
-    generate = function()
-      tries = tries + 1
-      local ui_index = session:generating(tries, options.refine.max_tries)
-      call(prompts.rewrite(context, request, history), function(err, candidate)
-        if err then
-          session:show_error(err, ui_index)
-          return
-        end
-        local attempt = { candidate = candidate }
-        table.insert(history, attempt)
-        session:add_candidate(ui_index, candidate)
-        if not options.refine.enabled then
-          finish(candidate, nil, ui_index)
-          return
-        end
-
-        session:reviewing_candidate(ui_index)
-        call(prompts.review(context, request, history), function(review_error, verdict)
-          if review_error then
-            session:show_error(review_error, ui_index)
+      local generate
+      generate = function()
+        run.tries = run.tries + 1
+        session:set_working(version_index, "Generating…")
+        call(prompts.rewrite(context, request, run.history), function(err, candidate)
+          if err then
+            session:show_error(err, version_index)
             return
           end
-          local approved, review_feedback = prompts.review_result(verdict)
-          if approved then
-            attempt.review = { approved = true }
-            session:add_review(ui_index, true)
-            finish(candidate, true, ui_index)
-          elseif approved == false then
-            attempt.review = { approved = false, feedback = review_feedback }
-            session:add_review(ui_index, false, review_feedback)
-            if tries < options.refine.max_tries then
-              generate()
-            else
-              finish(candidate, false, ui_index)
-            end
-          else
-            session:show_error(review_feedback)
+          local attempt = { candidate = candidate }
+          table.insert(run.history, attempt)
+          if not options.refine.enabled then
+            finish(candidate, nil)
+            return
           end
-        end, prompts.review_system)
-      end)
+
+          call(prompts.review(context, request, run.history), function(review_error, verdict)
+            if review_error then
+              session:show_error(review_error, version_index)
+              return
+            end
+            local approved, review_feedback = prompts.review_result(verdict)
+            if approved then
+              attempt.review = { approved = true }
+              finish(candidate, true)
+            elseif approved == false then
+              attempt.review = { approved = false, feedback = review_feedback }
+              if run.tries < options.refine.max_tries then
+                generate()
+              else
+                finish(candidate, false)
+              end
+            else
+              session:show_error(review_feedback, version_index)
+            end
+          end, prompts.review_system)
+        end)
+      end
+
+      generate()
     end
 
-    generate()
+    start_run({}, { request })
   end)
 end
 
