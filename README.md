@@ -132,6 +132,10 @@ require("replaice").setup({
 
 The provider receives `request.model`, `request.instructions`, and `request.input`. Call `done` once with an error or the replacement text.
 
+## Acknowledgments
+
+Developed with assistance from OpenAI Codex.
+
 ## License
 
 MIT
