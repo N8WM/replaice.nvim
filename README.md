@@ -4,7 +4,7 @@ Rewrite exactly the text you select—nothing else.
 
 Replaice is a Neovim plugin for editing prose in Markdown, plain text, and similar files. Select some text, describe how you want it changed, and choose the version you prefer. Leave the instructions empty when you just want the model to improve it.
 
-https://github.com/user-attachments/assets/bcfb3709-3e4d-4faa-a317-1832848458b1
+https://github.com/user-attachments/assets/89aaad85-759b-4580-badc-3e2a64e08611
 
 ## Requirements
 
