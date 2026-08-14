@@ -278,6 +278,7 @@ function Session:close(cancelled)
     return
   end
   self.cancelled = cancelled == true
+  local cancel_callback = self.cancelled and self.callbacks and self.callbacks.cancel
   self.closed = true
   if self.augroup then
     pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
@@ -295,6 +296,9 @@ function Session:close(cancelled)
   end
   if active_session == self then
     active_session = nil
+  end
+  if cancel_callback then
+    cancel_callback()
   end
 end
 
@@ -437,11 +441,7 @@ function M.open(options)
   end
 
   local function cancel()
-    local callbacks = session.callbacks
     session:close(true)
-    if callbacks and callbacks.cancel then
-      callbacks.cancel()
-    end
   end
   for _, bufnr in ipairs({ buffers.prompt, buffers.versions, buffers.preview }) do
     vim.keymap.set("n", "j", function() session:select(1) end, { buffer = bufnr, nowait = true })

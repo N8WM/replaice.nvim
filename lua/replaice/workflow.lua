@@ -29,10 +29,12 @@ function M.run(initial_prompt)
   if selection.was_active then
     vim.cmd("normal! \27")
   end
+  selection_module.highlight(selection)
   local context = context_module.capture(selection, options.context)
 
   ask(initial_prompt, function(input)
     if input == nil then
+      selection_module.clear_highlight(selection)
       return
     end
     local request = vim.trim(input) ~= "" and input or options.prompt
@@ -44,8 +46,13 @@ function M.run(initial_prompt)
     local function apply(replacement)
       local ok, err = selection_module.apply(selection, replacement)
       if not ok then
+        selection_module.clear_highlight(selection)
         return false, err
       end
+      selection_module.clear_highlight(selection)
+      vim.schedule(function()
+        selection_module.reselect(selection, replacement)
+      end)
       return true
     end
 
@@ -81,7 +88,13 @@ function M.run(initial_prompt)
       end)
     end
 
-    session:set_callbacks({ accept = apply, retry = retry })
+    session:set_callbacks({
+      accept = apply,
+      retry = retry,
+      cancel = function()
+        selection_module.clear_highlight(selection)
+      end,
+    })
 
     start_run = function(base_history, instructions)
       epoch = epoch + 1

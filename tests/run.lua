@@ -17,9 +17,18 @@ vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "hello brave world", "second lin
 vim.cmd("normal! 1G7|v4l\27")
 local captured = assert(selection.capture(buf))
 eq(captured.text, "brave", "captures an inclusive characterwise selection")
+vim.cmd("normal! \27")
+assert(selection.highlight(captured), "highlights a captured selection while work is pending")
+local pending_namespace = assert(vim.api.nvim_get_namespaces().replaice_pending)
+eq(#vim.api.nvim_buf_get_extmarks(buf, pending_namespace, 0, -1, {}), 1, "pending selection has one highlight")
+selection.clear_highlight(captured)
+eq(#vim.api.nvim_buf_get_extmarks(buf, pending_namespace, 0, -1, {}), 0, "pending highlight can be cleared")
 local ok, err = selection.apply(captured, "gentle")
 assert(ok, err)
 eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "hello gentle world", "second line" }, "changes only selection")
+assert(selection.reselect(captured, "gentle"), "reselects a characterwise replacement")
+eq(selection.capture(buf).text, "gentle", "new characterwise replacement remains selected")
+vim.cmd("normal! \27")
 
 local fragment_line = "The launch was kind of successful, despite the delay."
 local fragment = "kind of successful"
@@ -42,16 +51,28 @@ vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "hello first", "second world", "
 vim.cmd("normal! gg7|vj6|\27")
 local multiline = assert(selection.capture(buf))
 eq(multiline.text, "first\nsecond", "captures a multiline characterwise selection")
-ok, err = selection.apply(multiline, "joined")
+ok, err = selection.apply(multiline, "joined\nagain")
 assert(ok, err)
-eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "hello joined world", "third" }, "multiline replacement preserves both sides")
+eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "hello joined", "again world", "third" }, "multiline replacement preserves both sides")
+assert(selection.reselect(multiline, "joined\nagain"), "reselects a multiline characterwise replacement")
+eq(selection.capture(buf).text, "joined\nagain", "multiline characterwise replacement remains selected")
+vim.cmd("normal! \27")
 
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "line one", "line two" })
 vim.cmd("normal! ggVj\27")
 local line_selection = assert(selection.capture(buf))
 eq(line_selection.kind, "line", "captures linewise mode")
-ok, err = selection.apply(line_selection, "replacement")
+vim.cmd("normal! \27")
+assert(selection.highlight(line_selection), "highlights a pending linewise selection")
+eq(#vim.api.nvim_buf_get_extmarks(buf, pending_namespace, 0, -1, {}), 1, "linewise pending selection has one highlight")
+selection.clear_highlight(line_selection)
+ok, err = selection.apply(line_selection, "replacement\nanother")
 assert(ok, err)
-eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "replacement" }, "linewise replacement")
+eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "replacement", "another" }, "linewise replacement")
+assert(selection.reselect(line_selection, "replacement\nanother"), "reselects a linewise replacement")
+eq(selection.capture(buf).text, "replacement\nanother", "new linewise replacement remains selected")
+eq(vim.fn.mode(), "V", "linewise replacement preserves the original selection kind")
+vim.cmd("normal! \27")
 
 vim.o.selection = "exclusive"
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "abcde" })
@@ -63,15 +84,21 @@ vim.cmd("normal! \27")
 ok, err = selection.apply(exclusive, "XY")
 assert(ok, err)
 eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "XYcde" }, "exclusive replacement changes only selected bytes")
+assert(selection.reselect(exclusive, "XY"), "reselects with exclusive selection semantics")
+eq(selection.capture(buf).text, "XY", "exclusive selection covers the full replacement")
+vim.cmd("normal! \27")
 vim.o.selection = "inclusive"
 
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "aéz" })
 vim.cmd("normal! gg0lv\27")
 local unicode = assert(selection.capture(buf))
 eq(unicode.text, "é", "captures a multibyte character")
-ok, err = selection.apply(unicode, "E")
+ok, err = selection.apply(unicode, "éx")
 assert(ok, err)
-eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "aEz" }, "replaces a multibyte character safely")
+eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "aéxz" }, "replaces a multibyte character safely")
+assert(selection.reselect(unicode, "éx"), "reselects multibyte replacement text")
+eq(selection.capture(buf).text, "éx", "multibyte replacement is selected at byte-safe boundaries")
+vim.cmd("normal! \27")
 
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "alpha beta" })
 vim.cmd("normal! gg0v4l\27")
@@ -218,8 +245,15 @@ eq(accepted_from_picker, "more successful", "accept operates on the navigated ve
 eq(ui_session.closed, true, "accept closes the picker")
 
 local cancelled_ui = workflow_ui.open()
+local picker_cancel_calls = 0
+cancelled_ui:set_callbacks({
+  cancel = function()
+    picker_cancel_calls = picker_cancel_calls + 1
+  end,
+})
 cancelled_ui:close(true)
 eq(cancelled_ui:is_cancelled(), true, "closing a workflow as cancelled suppresses late results")
+eq(picker_cancel_calls, 1, "closing a picker runs cancellation cleanup once")
 
 local externally_closed_ui = workflow_ui.open()
 vim.api.nvim_win_close(externally_closed_ui.windows.versions, true)
@@ -257,6 +291,7 @@ package.loaded["replaice.providers.http"] = real_http
 require("replaice.config").setup({
   provider = function(request, done)
     assert(request.input:find("<REPLAICE_SELECTION>bad</REPLAICE_SELECTION>", 1, true), request.input)
+    eq(#vim.api.nvim_buf_get_extmarks(buf, pending_namespace, 0, -1, {}), 1, "workflow highlights the selection during generation")
     done(nil, "better")
   end,
   preview = false,
@@ -271,6 +306,19 @@ end
 require("replaice.workflow").run()
 vim.ui.input = original_input
 eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "better text" }, "end-to-end workflow edits only active selection")
+eq(#vim.api.nvim_buf_get_extmarks(buf, pending_namespace, 0, -1, {}), 0, "accepting clears the pending highlight")
+vim.wait(1000, function() return vim.fn.mode() == "v" end, 10)
+eq(selection.capture(buf).text, "better", "end-to-end workflow reselects the accepted replacement")
+vim.cmd("normal! \27")
+
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "cancel me" })
+vim.cmd("normal! gg0v5l")
+vim.ui.input = function(_, callback)
+  callback(nil)
+end
+require("replaice.workflow").run()
+vim.ui.input = original_input
+eq(#vim.api.nvim_buf_get_extmarks(buf, pending_namespace, 0, -1, {}), 0, "cancelling the instruction prompt clears the pending highlight")
 
 local provider_calls = 0
 require("replaice.config").setup({

@@ -1,4 +1,5 @@
 local M = {}
+local pending_namespace = vim.api.nvim_create_namespace("replaice_pending")
 
 function M.capture(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
@@ -33,6 +34,7 @@ function M.capture(bufnr)
 
   local selection = {
     bufnr = bufnr,
+    winid = vim.api.nvim_get_current_buf() == bufnr and vim.api.nvim_get_current_win() or nil,
     changedtick = vim.api.nvim_buf_get_changedtick(bufnr),
     kind = mode == "V" and "line" or "char",
     was_active = is_active,
@@ -93,6 +95,35 @@ function M.validate(selection)
   return true
 end
 
+function M.clear_highlight(selection)
+  if selection.pending_highlight and vim.api.nvim_buf_is_valid(selection.bufnr) then
+    pcall(vim.api.nvim_buf_del_extmark, selection.bufnr, pending_namespace, selection.pending_highlight)
+  end
+  selection.pending_highlight = nil
+end
+
+function M.highlight(selection)
+  if not vim.api.nvim_buf_is_valid(selection.bufnr) then
+    return false
+  end
+  M.clear_highlight(selection)
+  vim.api.nvim_set_hl(0, "ReplaicePending", { link = "Visual", default = true })
+  selection.pending_highlight = vim.api.nvim_buf_set_extmark(
+    selection.bufnr,
+    pending_namespace,
+    selection.start_row,
+    selection.start_col,
+    {
+      end_row = selection.end_row,
+      end_col = selection.end_col,
+      hl_group = "ReplaicePending",
+      hl_eol = selection.kind == "line",
+      priority = 200,
+    }
+  )
+  return true
+end
+
 function M.apply(selection, replacement)
   local ok, err = M.validate(selection)
   if not ok then
@@ -112,6 +143,79 @@ function M.apply(selection, replacement)
       lines
     )
   end
+  return true
+end
+
+local function source_window(selection)
+  if selection.winid
+      and vim.api.nvim_win_is_valid(selection.winid)
+      and vim.api.nvim_win_get_buf(selection.winid) == selection.bufnr then
+    return selection.winid
+  end
+  for _, winid in ipairs(vim.fn.win_findbuf(selection.bufnr)) do
+    if vim.api.nvim_win_is_valid(winid) then
+      return winid
+    end
+  end
+end
+
+local function last_character_col(text)
+  local byte = #text
+  while byte > 1 do
+    local value = text:byte(byte)
+    if value < 0x80 or value > 0xBF then
+      break
+    end
+    byte = byte - 1
+  end
+  return byte - 1
+end
+
+function M.reselect(selection, replacement)
+  if not vim.api.nvim_buf_is_valid(selection.bufnr) then
+    return false
+  end
+  local winid = source_window(selection)
+  if not winid then
+    return false
+  end
+
+  local lines = vim.split(replacement, "\n", { plain = true })
+  vim.api.nvim_set_current_win(winid)
+  vim.cmd("normal! \27")
+  vim.api.nvim_win_set_cursor(winid, { selection.start_row + 1, selection.start_col })
+
+  if replacement == "" then
+    return true
+  end
+  if selection.kind == "line" then
+    vim.cmd("normal! V")
+    vim.api.nvim_win_set_cursor(winid, { selection.start_row + #lines, 0 })
+    return true
+  end
+
+  local end_row = selection.start_row + #lines - 1
+  local end_col
+  if vim.o.selection == "exclusive" then
+    end_col = #lines[#lines]
+  elseif lines[#lines] ~= "" then
+    end_col = last_character_col(lines[#lines])
+  else
+    local previous = #lines - 1
+    while previous > 0 and lines[previous] == "" do
+      previous = previous - 1
+    end
+    if previous == 0 then
+      return true
+    end
+    end_row = selection.start_row + previous - 1
+    end_col = last_character_col(lines[previous])
+  end
+  if end_row == selection.start_row then
+    end_col = selection.start_col + end_col
+  end
+  vim.cmd("normal! v")
+  vim.api.nvim_win_set_cursor(winid, { end_row + 1, end_col })
   return true
 end
 
