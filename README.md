@@ -49,6 +49,21 @@ require("replaice").setup({
 })
 ```
 
+Claude also works through [Anthropic's OpenAI-compatible endpoint](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk). Set `ANTHROPIC_API_KEY`, then use:
+
+```lua
+require("replaice").setup({
+  provider = "openai_compatible",
+  model = "claude-sonnet-4-6",
+  providers = {
+    openai_compatible = {
+      endpoint = "https://api.anthropic.com/v1/chat/completions",
+      api_key_env = "ANTHROPIC_API_KEY",
+    },
+  },
+})
+```
+
 ## Usage
 
 1. Make a characterwise (`v`) or linewise (`V`) selection.
